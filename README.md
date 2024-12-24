@@ -22,7 +22,7 @@ Required resources:
 - [hacking](https://github.com/sample/hacking) - For hacking minigames
 - [bl_ui](https://github.com/sample/bl_ui) - For Untangle minigame (optional)
 - [ps-dispatch](https://github.com/Project-Sloth/ps-dispatch) (optional) - For police alerts
-- [valtMLO](https://github.com/uFLOKY/the-vault-bank) - MLO
+- [vaUltMLO](https://github.com/uFLOKY/the-vault-bank) - MLO
 ## ⚙️ Configuration
 
 The script includes extensive configuration options in `config.lua` and `client.lua` :
