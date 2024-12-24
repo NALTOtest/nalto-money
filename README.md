@@ -56,9 +56,9 @@ The robbery features multiple types of hacking minigames:
 
 1. Ensure all dependencies are installed
 2. Copy the resource to your resources folder
-3. Add to your `server.cfg`:
+3. Add to your `server.cfg` or add to `standalone folder` :
 ```cfg
-ensure nalto-vault
+ensure nalto-money
 ```
 
 ## 🔧 Usage
