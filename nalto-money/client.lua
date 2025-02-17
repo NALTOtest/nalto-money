@@ -1,63 +1,5 @@
 local QBCore = exports['qb-core']:GetCoreObject()
 
-
--- Configuration
-local Config = {
-    Vaulthack = {
-        iterations = 1,      
-        numberOfNodes = 11,  
-        duration = 5,
-        wordWizDuration = 30
-    },
-    HackItems = {
-        -- First 3 hacks require trojan_usb - removed on success
-        [1] = { item = "trojan_usb", removeOnSuccess = true },
-        [2] = { item = "trojan_usb", removeOnSuccess = true },
-        [3] = { item = "trojan_usb", removeOnSuccess = true },
-        -- Last 2 hacks require vaultlaptop - uses durability system
-        [4] = { item = "vaultlaptop", usesDurability = true },
-        [5] = { item = "vaultlaptop", usesDurability = true }
-    },
-    -- Default durability for new laptops
-    LaptopDurability = {
-        vaultlaptop = 3  -- Number of uses before breaking
-    },
-    Banks = {
-        ['vault'] = {
-            type = 'vault',
-            trolly = {
-                [4] = {
-                    coords = vector4(248.17, -1104.12, 28.49, 317.02),
-                    type = 'money',
-                    taken = false,
-                    busy = false
-                },
-                [5] = {
-                    coords = vector4(242.77, -1106.07, 28.49, 278.38),
-                    type = 'money',
-                    taken = false,
-                    busy = false
-                },
-                [6] = {
-                    coords = vector4(237.62, -1105.68, 28.49, 219.06),
-                    type = 'money',
-                    taken = false,
-                    busy = false
-                }
-            }
-        }
-    }
-}
-
-Config.Police = {
-    required = true,
-    minimumCount = 3,
-    jobs = {
-        ["police"] = true,
-        ["sheriff"] = true
-    }
-}
-
 local trollies = {}
 local currentBank = 'vault'
 local activeHackZones = {}
@@ -65,10 +7,8 @@ local failedAttempts = {}
 local drilledSpots = {}
 local drillcooldowns = {}
 local lastVaultAlertTime = 0
-local vaultAlertCooldown = 60000 -- 1-minute cooldown (adjust as needed)
-
--- Global variable to track current bank
-local currentBank = 'vault'
+local vaultAlertCooldown = 60000 -- 1-minute cooldown
+local completedHacks = {}
 
 -- Vault Door Configurations
 local VAULT_DOORS = {
@@ -145,10 +85,10 @@ local HACK_LOCATIONS = {
 
 local SPECIAL_HACK_COORDS = {
     [4] = { coords = vector3(248.78, -1098.22, 29.90), heading = 181.60 },
-    [5] = { coords = vector3(246.99, -1094.65, 29.90), heading = 100.0 }  -- New coordinates for hack 5
+    [5] = { coords = vector3(246.99, -1094.65, 29.90), heading = 100.0 }
 }
 
--- Function to find the corresponding vault door for a hack location
+-- Function to find corresponding vault door
 local function FindCorrespondingVaultDoor(hackLocationIndex)
     local hackLocation = HACK_LOCATIONS[hackLocationIndex]
     
@@ -157,7 +97,6 @@ local function FindCorrespondingVaultDoor(hackLocationIndex)
         return nil 
     end
     
-    -- Handle multiple doors case
     if type(hackLocation.targetDoorIndex) == "table" then
         local doors = {}
         for _, doorIndex in ipairs(hackLocation.targetDoorIndex) do
@@ -167,10 +106,8 @@ local function FindCorrespondingVaultDoor(hackLocationIndex)
                 QBCore.Functions.Notify("Invalid door index: " .. tostring(doorIndex), "error")
             end
         end
-        -- Only return doors array if we found at least one valid door
         return #doors > 0 and doors or nil
     else
-        -- Single door case
         local door = VAULT_DOORS[hackLocation.targetDoorIndex]
         if not door then
             QBCore.Functions.Notify("Invalid door index: " .. tostring(hackLocation.targetDoorIndex), "error")
@@ -180,15 +117,13 @@ local function FindCorrespondingVaultDoor(hackLocationIndex)
     end
 end
 
--- Function to open/close vault door
+-- Function to manage vault door
 local function ManageVaultDoor(doorConfig, state)
-    -- Check if doorConfig is nil
     if not doorConfig then
         QBCore.Functions.Notify("Invalid door configuration", "error")
         return
     end
 
-    -- Validate door configuration
     if not doorConfig.coords or not doorConfig.hash then
         QBCore.Functions.Notify("Incomplete door configuration", "error")
         return
@@ -294,7 +229,8 @@ local function startPinCracker(pinLength, timer)
     end
 end
 
-RegisterNetEvent('vault:attemptHack', function(data)
+RegisterNetEvent('vault:attemptHack')
+AddEventHandler('vault:attemptHack', function(data)
     local locationIndex = data.locationIndex
     local hackLocation = HACK_LOCATIONS[locationIndex]
 
@@ -303,9 +239,14 @@ RegisterNetEvent('vault:attemptHack', function(data)
         return
     end
 
-    -- Check for police count using same logic as store robbery
-    QBCore.Functions.TriggerCallback('robbery:server:getCops', function(cops)
+    QBCore.Functions.TriggerCallback('vault:server:getCops', function(cops)
         if cops >= Config.Police.minimumCount then
+            -- Check if hack is already completed
+            if completedHacks[locationIndex] then
+                QBCore.Functions.Notify('This system has already been breached.', 'error')
+                return
+            end
+
             -- Check for required item
             if not HasRequiredItem(locationIndex) then
                 return
@@ -342,9 +283,84 @@ RegisterNetEvent('vault:attemptHack', function(data)
             elseif locationIndex == 5 then
                 HandleSpecialHack5(locationIndex, targetDoor, playerId)
             end
+
+            -- If hack is successful, mark it as completed
+            QBCore.Functions.TriggerCallback('vault:server:CheckHackState', function(canHack)
+                if canHack then
+                    if hackSuccess then
+                        TriggerServerEvent('vault:server:CompleteHack', locationIndex)
+                    end
+                end
+            end, locationIndex)
         else
             QBCore.Functions.Notify('Not enough police in the city!', 'error')
             return
+        end
+    end)
+end)
+
+
+-- Function to disable a hack location
+RegisterNetEvent('vault:client:DisableHackLocation')
+AddEventHandler('vault:client:DisableHackLocation', function(locationIndex)
+    local zoneId = "vault_hack_" .. locationIndex
+    if activeHackZones[zoneId] then
+        exports['qb-target']:RemoveZone(zoneId)
+        activeHackZones[zoneId] = nil
+        completedHacks[locationIndex] = true
+    end
+end)
+
+-- Function to reset all hack locations
+RegisterNetEvent('vault:client:ResetAllHacks')
+AddEventHandler('vault:client:ResetAllHacks', function()
+    -- Remove all existing zones first
+    for zoneId in pairs(activeHackZones) do
+        exports['qb-target']:RemoveZone(zoneId)
+        activeHackZones[zoneId] = nil
+    end
+    
+    -- Recreate all hack zones
+    for i, location in ipairs(HACK_LOCATIONS) do
+        local zoneId = "vault_hack_" .. i
+        activeHackZones[zoneId] = true
+        
+        exports['qb-target']:AddBoxZone(zoneId, location.coords, 1.0, 1.0, {
+            name = zoneId,
+            heading = 0,
+            debugPoly = false,
+            minZ = location.coords.z - 1,
+            maxZ = location.coords.z + 1,
+        }, {
+            options = {
+                {
+                    type = "client",
+                    event = "vault:attemptHack",
+                    icon = "fas fa-laptop-code",
+                    label = location.label,
+                    locationIndex = i
+                }
+            },
+            distance = 0.73
+        })
+    end
+    completedHacks = {}
+end)
+
+-- Get initial hack states when player loads in
+RegisterNetEvent('QBCore:Client:OnPlayerLoaded')
+AddEventHandler('QBCore:Client:OnPlayerLoaded', function()
+    QBCore.Functions.TriggerCallback('vault:server:GetHackStates', function(hackStates)
+        completedHacks = hackStates
+        -- Disable any completed hack locations
+        for locationIndex, completed in pairs(completedHacks) do
+            if completed then
+                local zoneId = "vault_hack_" .. locationIndex
+                if activeHackZones[zoneId] then
+                    exports['qb-target']:RemoveZone(zoneId)
+                    activeHackZones[zoneId] = nil
+                end
+            end
         end
     end)
 end)
@@ -358,8 +374,8 @@ function HandlePinCrackerHack(locationIndex, targetDoor, playerId)
         VaultBankRobbery()
     end
 
-    local pinLength = 5
-    local timer = 40
+    local pinLength = 1
+    local timer = 50
     local hackSuccess = startPinCracker(pinLength, timer)
 
     if hackSuccess then
@@ -374,9 +390,9 @@ end
 -- Handle special hack for location 4
 function HandleSpecialHack4(locationIndex, targetDoor, playerId)
     local hackLocationSpecial = SPECIAL_HACK_COORDS[locationIndex]
-    local difficulty = 20  -- Specific difficulty for hack 4
+    local difficulty = 22  -- Specific difficulty for hack 4
     local rows = 3        -- Specific settings for hack 4
-    local columns = 3
+    local columns = 1
     
 
     HandleSpecialHackSequence(locationIndex, targetDoor, playerId, hackLocationSpecial, difficulty, rows, columns)
@@ -385,9 +401,9 @@ end
 -- Handle special hack for location 5
 function HandleSpecialHack5(locationIndex, targetDoor, playerId)
     local hackLocationSpecial = SPECIAL_HACK_COORDS[locationIndex]
-    local difficulty = 12 -- Higher difficulty for hack 5
-    local rows = 4       -- More complex grid for hack 5
-    local columns = 2
+    local difficulty = 25 -- Higher difficulty for hack 5
+    local rows = 3       -- More complex grid for hack 5
+    local columns = 1
     
 
     HandleSpecialHackSequence(locationIndex, targetDoor, playerId, hackLocationSpecial, difficulty, rows, columns)
@@ -477,28 +493,112 @@ function CleanupHackingScene(props, playerPed, animDict)
     RemoveAnimDict(animDict)
 end
 
+RegisterNetEvent('vault:client:UpdateDoorState', function(doorId, state)
+    local door = VAULT_DOORS[doorId]
+    if not door then return end
+    
+    local doorObject = GetClosestObjectOfType(
+        door.coords.x,
+        door.coords.y,
+        door.coords.z,
+        2.0,
+        door.hash,
+        false,
+        false,
+        false
+    )
+    
+    if doorObject and DoesEntityExist(doorObject) then
+        if state == "open" then
+            -- Add a slight delay to match the sound
+            Wait(500)
+            SetEntityHeading(doorObject, door.coords.w + 90.0)
+            FreezeEntityPosition(doorObject, false)
+        else
+            SetEntityHeading(doorObject, door.coords.w)
+            FreezeEntityPosition(doorObject, true)
+        end
+    end
+end)
+
 -- Success/Failure handlers
 function HandleHackSuccess(locationIndex, targetDoor, playerId)
     failedAttempts[playerId] = 0
-    TriggerServerEvent('vault:hackSuccessful')
     
-    -- Handle multiple doors with validation
-    if type(targetDoor) == "table" then
-        for _, door in ipairs(targetDoor) do
-            if door then  -- Validate each door
-                ManageVaultDoor(door, "open")
-            end
-        end
-    elseif targetDoor then  -- Validate single door
-        ManageVaultDoor(targetDoor, "open")
-    else
-        QBCore.Functions.Notify("No valid door configuration found", "error")
-        return
-    end
+    -- Play success sound
+    TriggerServerEvent('InteractSound_SV:PlayOnSource', 'door-unlock', 0.3)
+    
+    -- Sync only the doors for this specific hack location
+    Wait(500)
+    TriggerServerEvent('vault:syncDoorState', "open", locationIndex)
     
     QBCore.Functions.Notify("Vault door successfully hacked!", "success")
+
+    -- Only spawn trolleys if this was the final hack
+    if locationIndex == #HACK_LOCATIONS then
+        -- Initialize trolley tables
+        trollies = {}
+        trollies[currentBank] = {}
+
+        -- Spawn trolleys only after final hack
+        for index, trolleyInfo in pairs(Config.Vault[currentBank].trolly) do
+            local trolley = SpawnTrolleyProp(trolleyInfo.coords, trolleyInfo.type)
+            trollies[currentBank][index] = trolley
+
+            -- Add target interaction with corrected setup
+            exports['qb-target']:AddTargetEntity(trolley, {
+                options = {
+                    {
+                        num = 1,
+                        type = "client",
+                        event = "vault:client:LootTrolly",
+                        icon = "fas fa-hand-holding",
+                        label = "Loot Trolley",
+                        bank = currentBank,
+                        index = index,
+                        entity = trolley
+                    }
+                },
+                distance = 1.5
+            })
+        end
+
+        QBCore.Functions.Notify("Security systems breached! Trolleys exposed!", "success")
+    end
+
     RemoveHackZone("vault_hack_" .. locationIndex)
 end
+
+-- Spawn trolleys and set targets dynamically
+local function SpawnTrolleys()
+    trollies = {}
+    trollies[currentBank] = {}
+
+    for index, trolleyInfo in pairs(Config.Vault[currentBank].trolly) do
+        local trolleyModel = `ch_prop_cash_low_trolly_01`
+        lib.requestModel(trolleyModel)
+        local trolley = CreateObject(trolleyModel, trolleyInfo.coords.x, trolleyInfo.coords.y, trolleyInfo.coords.z, true, true, false)
+        SetEntityHeading(trolley, trolleyInfo.coords.w)
+        trollies[currentBank][index] = trolley
+
+        -- Add interaction zone for each trolley
+        exports['qb-target']:AddTargetEntity(trolley, {
+            options = {
+                {
+                    type = "client",
+                    event = "vault:client:LootTrolly",
+                    icon = "fas fa-hand-holding",
+                    label = "Loot Trolley",
+                    args = { bank = currentBank, index = index }
+                }
+            },
+            distance = 1.5
+        })
+    end
+
+    QBCore.Functions.Notify("Trolleys have appeared!", "success")
+end
+
 
 function HandleHackFailure(locationIndex, playerId)
     failedAttempts[playerId] = failedAttempts[playerId] + 1
@@ -551,37 +651,13 @@ end
 
 exports("WordWiz", wordWiz)
 
-Citizen.CreateThread(function()
-    trollies = {}
-    trollies[currentBank] = {}
-
-    for index, trolleyInfo in pairs(Config.Banks[currentBank].trolly) do
-        local trolley = SpawnTrolleyProp(trolleyInfo.coords, trolleyInfo.type)
-        trollies[currentBank][index] = trolley
-
-        -- Add interaction zone for each trolley
-        exports['qb-target']:AddTargetEntity(trolley, {
-            options = {
-                {
-                    type = "client",
-                    event = "vault:client:LootTrolly",
-                    icon = "fas fa-hand-holding",
-                    label = "Loot Trolley"
-                }
-            },
-            distance = 1.5
-        })
-    end
-end)
-
-
 
 
 LootTrolly = function(trolly, bank, index)
     local ped = cache.ped
 
     local moneyModel = `hei_prop_heist_cash_pile`
-    if Config.Banks[bank].trolly[index].type == 'gold' then 
+    if Config.Vault[bank].trolly[index].type == 'gold' then 
         moneyModel = `ch_prop_gold_bar_01a` 
     end
 
@@ -630,53 +706,27 @@ LootTrolly = function(trolly, bank, index)
 
     -- Spawn the new empty trolley model
     lib.requestModel(`hei_prop_hei_cash_trolly_03`)
-    local newTrolley = CreateObject(`hei_prop_hei_cash_trolly_03`, Config.Banks[bank].trolly[index].coords.x, Config.Banks[bank].trolly[index].coords.y, Config.Banks[bank].trolly[index].coords.z, true, true, false)
-    SetEntityHeading(newTrolley, Config.Banks[bank].trolly[index].coords.w)
+    local newTrolley = CreateObject(`hei_prop_hei_cash_trolly_03`, Config.Vault[bank].trolly[index].coords.x, Config.Vault[bank].trolly[index].coords.y, Config.Vault[bank].trolly[index].coords.z, true, true, false)
+    SetEntityHeading(newTrolley, Config.Vault[bank].trolly[index].coords.w)
     FreezeEntityPosition(newTrolley, true)
     SetEntityAsMissionEntity(newTrolley, true, true)
 
     -- Mark the trolley as taken
-    TriggerServerEvent('bankrobbery:server:SetTrollyTaken', bank, index)
+    TriggerServerEvent('vault:server:SetTrollyTaken', bank, index)
 
     -- Add Loosenotes Reward
-    if Config.Banks[bank].trolly[index].type == 'money' then
-        local rewardConfig = Rewards.Trollys['money'].vault.loosenotes
-        local loosenotesAmount = math.random(rewardConfig.minAmount, rewardConfig.maxAmount)
-        
-        -- Trigger event to give loosenotes reward
-        TriggerServerEvent('vault:giveReward', 'item', 'loosenotes', loosenotesAmount)
-        
-        -- Notify player about loosenotes
-        QBCore.Functions.Notify(string.format("You found %d loosenotes!", loosenotesAmount), "success")
-    end
+if Config.Vault[bank].trolly[index].type == 'money' then
+    local rewardConfig = Config.Rewards.Trollys['money'].vault.loosenotes
+    local loosenotesAmount = math.random(rewardConfig.minAmount, rewardConfig.maxAmount)
+    
+    -- Trigger event to give loosenotes reward
+    TriggerServerEvent('vault:giveReward', 'item', 'loosenotes', loosenotesAmount)
+    
+    -- Notify player about loosenotes
+    QBCore.Functions.Notify(string.format("You found %d loosenotes!", loosenotesAmount), "success")
 end
 
-
--- Function to spawn trolleys and set targets
-local function SpawnTrolleys()
-    for index, trolleyInfo in pairs(Config.Banks[currentBank].trolly) do
-        local trolleyModel = `ch_prop_cash_low_trolly_01`
-        lib.requestModel(trolleyModel)
-        local trolley = CreateObject(trolleyModel, trolleyInfo.coords.x, trolleyInfo.coords.y, trolleyInfo.coords.z, true, true, false)
-        SetEntityHeading(trolley, trolleyInfo.coords.w)
-        trollies[index] = trolley
-
-        -- Add interaction zone for each trolley
-        exports['qb-target']:AddTargetEntity(trolley, {
-            options = {
-                {
-                    type = "client",
-                    event = "vault:client:LootTrolley",
-                    icon = "fas fa-hand-holding",
-                    label = "Loot Trolley",
-                    args = { bank = currentBank, index = index }
-                }
-            },
-            distance = 1.5
-        })
-    end
 end
-
 
 
 -- Register the drilling event
@@ -854,48 +904,20 @@ end)
 CreateThread(SpawnTrolleys)
 
 
-RegisterNetEvent('bankrobbery:client:SetTrollyTaken', function(bank, index)
-    if Config.Banks[bank] and Config.Banks[bank].trolly[index] then
-        Config.Banks[bank].trolly[index].taken = true
+RegisterNetEvent('vault:client:SetTrollyTaken', function(bank, index)
+    if Config.Vault[bank] and Config.Vault[bank].trolly[index] then
+        Config.Vault[bank].trolly[index].taken = true
     end
 end)
 
 function SetTrollyState(bank, index, state)
-    if Config.Banks[bank] and Config.Banks[bank].trolly[index] then
-        Config.Banks[bank].trolly[index].taken = state.taken or false
-        Config.Banks[bank].trolly[index].busy = state.busy or false
+    if Config.Vault[bank] and Config.Vault[bank].trolly[index] then
+        Config.Vault[bank].trolly[index].taken = state.taken or false
+        Config.Vault[bank].trolly[index].busy = state.busy or false
         TriggerClientEvent('vault:client:UpdateTrollyState', -1, bank, index, state)
     end
 end
 
-
-Citizen.CreateThread(function()
-    -- Store spawned trolleys in a table for reference
-    trollies = {}
-    trollies[currentBank] = {}
-
-    for index, trolleyInfo in ipairs(Config.Banks[currentBank].trolly) do
-        -- Spawn the trolley
-        local trolley = SpawnTrolleyProp(trolleyInfo.coords, trolleyInfo.type)
-        trollies[currentBank][index] = trolley
-
-        -- Add target zone
-        exports['qb-target']:AddTargetEntity(trolley, {
-            options = {
-                {
-                    type = "client",
-                    event = "vault:client:LootTrolly",
-                    icon = "fas fa-cash-register",
-                    label = "Loot Trolley",
-                    action = function(entity)
-                        TriggerEvent('vault:client:LootTrolly', {entity = entity})
-                    end
-                }
-            },
-            distance = 1.5
-        })
-    end
-end)
 
 function requestModel(model)
     RequestModel(model)
@@ -936,34 +958,32 @@ function SpawnTrolleyProp(coords, type)
     return trolley
 end
 
-
-
 RegisterNetEvent('vault:client:LootTrolly', function(data)
-    if not currentBank then return end
-
     local trolly = data.entity
+    if not trolly then return end
+    
     local pos = GetEntityCoords(trolly)
-
-    for k, v in pairs(Config.Banks[currentBank].trolly) do
+    local bank = 'vault' -- Since we're working with the vault bank
+    
+    for k, v in pairs(Config.Vault[bank].trolly) do
         if #(pos - v.coords.xyz) < 1.0 then
             if v.busy or v.taken then
-                QBCore.Functions.Notify("Trolley already looted or in use.", "error", 3000)
+                QBCore.Functions.Notify("Trolley already looted or in use.", "error")
                 return 
             end
             
-            TriggerServerEvent('vault:server:SetTrollyBusy', currentBank, k)
+            -- Set trolley as busy
+            TriggerServerEvent('vault:server:SetTrollyBusy', bank, k)
             LocalPlayer.state.inv_busy = true
-
-            -- Start loot animation
-            LootTrolly(trolly, currentBank, k)
-
+            
+            -- Start loot animation and process
+            LootTrolly(trolly, bank, k)
+            
             LocalPlayer.state.inv_busy = false
-            return
+            break
         end
     end
 end)
-
-
 
 -- Add target interactions for all hack locations
 Citizen.CreateThread(function()
@@ -987,7 +1007,7 @@ Citizen.CreateThread(function()
                     locationIndex = i
                 }
             },
-            distance = 0.65
+            distance = 0.73
         })
     end
 end)
@@ -996,15 +1016,24 @@ exports['qb-target']:AddTargetModel({`hei_prop_hei_cash_trolly_01`, `ch_prop_gol
     options = {
         {
             type = 'client',
-            event = 'bankrobbery:client:LootTrolly',
+            event = 'vault:client:LootTrolly', -- Changed from bankrobbery:client:LootTrolly
             icon = 'fas fa-hand-holding',
             label = 'Loot Trolley',
             canInteract = function(entity)
-                return currentBank and Config.Banks[currentBank].hacked
+                -- Add proper checks for trolley state
+                local pos = GetEntityCoords(entity)
+                for bank, data in pairs(Config.Vault) do
+                    for k, v in pairs(data.trolly) do
+                        if #(pos - v.coords.xyz) < 1.0 then
+                            return not v.taken and not v.busy
+                        end
+                    end
+                end
+                return false
             end
         }
     },
-    distance = 0.85
+    distance = 1.5
 })
 
 -- Export the Untangle function
